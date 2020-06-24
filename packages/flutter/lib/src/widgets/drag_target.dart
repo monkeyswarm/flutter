@@ -38,6 +38,18 @@ typedef DragTargetAcceptWithDetails<T> = void Function(DragTargetDetails<T> deta
 /// Used by [DragTarget.builder].
 typedef DragTargetBuilder<T> = Widget Function(BuildContext context, List<T> candidateData, List<dynamic> rejectedData);
 
+/// Signature for building children of a [DragTarget].
+///
+/// The `candidateDetails` argument contains the list of [DragTargetDetails] for
+/// [Draggable]s hovering over this [DragTarget] and that has passed
+/// [DragTarget.onWillAccept]. The `rejectedDetails` argument contains the list
+/// of [DragTargetDetails] for [Draggable]s hovering over this [DragTarget]
+/// that will not be accepted by the [DragTarget].
+///
+/// Used by [DragTarget.detailsBuilder].
+typedef DragTargetDetailsBuilder<T> =
+    Widget Function(BuildContext context, List<DragTargetDetails<T>> candidateDetails, List<DragTargetDetails<dynamic>> rejectedDetails);
+
 /// Signature for when a [Draggable] is dropped without being accepted by a [DragTarget].
 ///
 /// Used by [Draggable.onDraggableCanceled].
@@ -56,6 +68,11 @@ typedef DragEndCallback = void Function(DraggableDetails details);
 ///
 /// Used by [DragTarget.onLeave].
 typedef DragTargetLeave = void Function(Object data);
+
+/// Signature for when a [Draggable] moves within a [DragTarget].
+///
+/// Used by [DragTarget.onMove].
+typedef DragTargetMove = void Function(DragTargetDetails<dynamic> details);
 
 /// Where the [Draggable] should be anchored during a drag.
 enum DragAnchor {
@@ -496,21 +513,37 @@ class DragTargetDetails<T> {
 class DragTarget<T> extends StatefulWidget {
   /// Creates a widget that receives drags.
   ///
-  /// The [builder] argument must not be null.
+  /// Either the [builder] or [detailsBuilder] argument must not be null.
   const DragTarget({
     Key key,
-    @required this.builder,
+    this.builder,
+    this.detailsBuilder,
     this.onWillAccept,
     this.onAccept,
     this.onAcceptWithDetails,
     this.onLeave,
-  }) : super(key: key);
+    this.onMove,
+  }) :
+    assert(builder != null || detailsBuilder != null,
+        'DragTarget.builder or DragTarget.detailsBuilder must be set.'),
+    super(key: key);
 
   /// Called to build the contents of this widget.
   ///
   /// The builder can build different widgets depending on what is being dragged
-  /// into this drag target.
+  /// into this drag target. This builder is called when [Draggable]s enter,
+  /// leave, are accepted, or are rejected.
   final DragTargetBuilder<T> builder;
+
+  /// Called to build the contents of this widget.
+  ///
+  /// Like [builder], but a) is also called on every [Draggable] movement within
+  /// the [DragTarget], and b) vends [DragTargetDetails] instead of just the
+  /// [Draggable] data.
+  ///
+  /// If both [builder] and [detailsBuilder] are set, then [detailsBuilder] will
+  /// be called.
+  final DragTargetDetailsBuilder<T> detailsBuilder;
 
   /// Called to determine whether this widget is interested in receiving a given
   /// piece of data being dragged over this drag target.
@@ -535,6 +568,11 @@ class DragTarget<T> extends StatefulWidget {
   /// the target.
   final DragTargetLeave onLeave;
 
+  /// Called when a [Draggable] moves within this [DragTarget].
+  ///
+  /// Note that this includes entering and leaving the target.
+  final DragTargetMove onMove;
+
   @override
   _DragTargetState<T> createState() => _DragTargetState<T>();
 }
@@ -542,6 +580,9 @@ class DragTarget<T> extends StatefulWidget {
 List<T> _mapAvatarsToData<T>(List<_DragAvatar<T>> avatars) {
   return avatars.map<T>((_DragAvatar<T> avatar) => avatar.data).toList();
 }
+
+List<DragTargetDetails<T>> _mapAvatarsToDetails<T>(List<_DragAvatar<T>> avatars) =>
+    avatars.map<DragTargetDetails<T>>((_DragAvatar<T> avatar) => DragTargetDetails<T>(data:avatar.data as T, offset:avatar._lastOffset)).toList();
 
 class _DragTargetState<T> extends State<DragTarget<T>> {
   final List<_DragAvatar<T>> _candidateAvatars = <_DragAvatar<T>>[];
@@ -588,13 +629,24 @@ class _DragTargetState<T> extends State<DragTarget<T>> {
       widget.onAcceptWithDetails(DragTargetDetails<T>(data: avatar.data as T, offset: avatar._lastOffset));
   }
 
+  void didMove(_DragAvatar<Object> avatar) {
+    if (!mounted)
+      return;
+    setState(() {});
+    if (widget.onMove != null)
+      widget.onMove(DragTargetDetails<dynamic>(data:avatar.data, offset:avatar._lastOffset));
+  }
+
+
   @override
   Widget build(BuildContext context) {
     assert(widget.builder != null);
     return MetaData(
       metaData: this,
       behavior: HitTestBehavior.translucent,
-      child: widget.builder(context, _mapAvatarsToData<T>(_candidateAvatars), _mapAvatarsToData<Object>(_rejectedAvatars)),
+      child: (widget.detailsBuilder!=null) ?
+          widget.detailsBuilder(context,  _mapAvatarsToDetails<T>(_candidateAvatars),  _mapAvatarsToDetails<Object>(_rejectedAvatars)) :
+          widget.builder(context, _mapAvatarsToData<T>(_candidateAvatars), _mapAvatarsToData<Object>(_rejectedAvatars)),
     );
   }
 }
@@ -679,6 +731,9 @@ class _DragAvatar<T> extends Drag {
         }
       }
     }
+
+    // Report moves to the targets.
+    _enteredTargets.forEach((target) => target.didMove(this));
 
     // If everything's the same, bail early.
     if (listsMatch)
